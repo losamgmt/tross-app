@@ -1,0 +1,79 @@
+# TrossApp Docker Compose - Development Environment
+# Provides PostgreSQL database and Redis cache for local development
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database (Standard port 5432)
+  postgres:
+    image: postgres:15-alpine
+    container_name: trossapp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: trossapp_dev
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: tross123
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations:/docker-entrypoint-initdb.d/migrations:ro
+      - ./backend/seeds:/docker-entrypoint-initdb.d/seeds:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d trossapp_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - trossapp-network
+    command: postgres -c log_statement=all -c log_destination=stderr
+
+  # Redis Cache (for future use)
+  redis:
+    image: redis:7-alpine
+    container_name: trossapp-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - trossapp-network
+
+  # pgAdmin (Database Administration - Optional)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: trossapp-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@trossapp.dev
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    networks:
+      - trossapp-network
+    profiles:
+      - admin # Optional service, start with: docker-compose --profile admin up
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  trossapp-network:
+    driver: bridge

@@ -1,41 +1,51 @@
 @echo off
-REM TrossApp Development Startup Script
+REM TrossApp Development Startup Script with Port Management
 echo.
 echo ========================================
 echo  TrossApp Development Environment
 echo ========================================
 echo.
 
-REM Check if backend is already running
-netstat -ano | findstr ":3001" >nul
-if %errorlevel% == 0 (
-    echo ✅ Backend already running on port 3001
-) else (
-    echo 🚀 Starting backend server...
-    start "TrossApp Backend" cmd /k "cd /d "%~dp0..\backend" && npm start"
-    timeout /t 3 /nobreak >nul
-)
+REM Navigate to project root
+cd /d "%~dp0.."
 
-REM Check if frontend is running
-netstat -ano | findstr ":8080" >nul
-if %errorlevel% == 0 (
-    echo ✅ Frontend already running on port 8080
-) else (
-    echo 🎨 Starting Flutter frontend...
-    start "TrossApp Frontend" cmd /k "cd /d "C:\dev\frontend" && flutter run -d web-server --web-port 8080"
+REM Check port availability
+echo 🔍 Checking port availability...
+node scripts/check-ports.js 3001 8080 2>nul
+if %errorlevel% neq 0 (
+    echo.
+    echo ⚠️  Ports in use detected!
+    echo Would you like to kill existing processes? (Y/N)
+    choice /C YN /N
+    if errorlevel 2 (
+        echo ❌ Startup cancelled
+        exit /b 1
+    )
+    echo 🧹 Cleaning up ports...
+    node scripts/kill-port.js 3001 8080
+    timeout /t 2 /nobreak >nul
 )
 
 echo.
-echo 🌐 Backend: http://localhost:3001/api/health
+echo 🚀 Starting development servers...
+echo.
+
+REM Start backend
+echo � Starting backend server (port 3001)...
+start "TrossApp Backend" cmd /k "cd /d "%~dp0.." && npm run dev --workspace=backend"
+timeout /t 3 /nobreak >nul
+
+REM Start frontend
+echo 🎨 Starting Flutter frontend (port 8080)...
+start "TrossApp Frontend" cmd /k "cd /d "%~dp0.." && npm run dev:frontend:win"
+
+echo.
+echo ✅ Development environment starting!
+echo.
+echo 🌐 Backend:  http://localhost:3001/api/health
 echo 🎯 Frontend: http://localhost:8080
 echo.
-echo Press any key to open both in browser...
-pause >nul
-
-start http://localhost:3001/api/health
-start http://localhost:8080
-
+echo 📝 Logs are in respective terminal windows
+echo 🛑 To stop: Use Ctrl+C in terminal windows or run stop-dev.bat
 echo.
-echo Development environment started!
-echo Close the terminal windows to stop the servers.
 pause

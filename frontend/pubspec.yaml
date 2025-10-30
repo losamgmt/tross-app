@@ -1,34 +1,35 @@
 name: tross_app
-description: "TrossApp - Professional work order management system with skills-based matching"
+description: "Tross - Professional work order management system with skills-based matching"
 publish_to: 'none'
 
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.9.2
+  sdk: '>=3.9.2 <4.0.0'
+  flutter: '>=3.35.0'
 
 dependencies:
   flutter:
     sdk: flutter
+  flutter_web_plugins:
+    sdk: flutter
   cupertino_icons: ^1.0.8
   http: ^1.5.0
+  provider: ^6.1.2
+  auth0_flutter: ^1.14.0
+  flutter_secure_storage: ^9.2.4
+  url_launcher: ^6.3.0
+  crypto: ^3.0.3  # For SHA256 hashing in PKCE
+  convert: ^3.1.1  # For base64 encoding in PKCE
+  connectivity_plus: ^6.1.0  # Network connectivity detection
+  web: ^1.1.0  # Modern web APIs (replaces dart:html)
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-
-  # The "flutter_lints" package below contains a set of recommended lints to
-  # encourage good coding practices. The lint set provided by the package is
-  # activated in the `analysis_options.yaml` file located at the root of your
-  # package. See that file for information about deactivating specific lint
-  # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
-dependency_overrides:
-  characters: ^1.4.1
-  material_color_utilities: ^0.13.0
-  meta: ^1.17.0
-  test_api: ^0.7.7
+# Removed dependency_overrides to allow Flutter to resolve the best compatible versions
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

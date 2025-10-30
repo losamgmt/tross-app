@@ -1,235 +1,419 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_web_plugins/url_strategy.dart';
+import 'package:provider/provider.dart';
+// Conditional import: use browser utils on web, stub on other platforms
+import 'utils/browser_utils_stub.dart'
+    if (dart.library.html) 'utils/browser_utils_web.dart';
+import 'screens/login_screen.dart';
+import 'screens/home_screen.dart';
+import 'screens/admin/admin_dashboard.dart';
+import 'screens/settings/settings_screen.dart';
+import 'widgets/organisms/error_display.dart';
+import 'widgets/molecules/error_action_buttons.dart'; // For ErrorAction
+import 'providers/auth_provider.dart';
+import 'providers/app_provider.dart';
+import 'core/routing/app_routes.dart';
+import 'core/routing/route_guard.dart';
+import 'config/constants.dart';
+import 'config/app_theme.dart';
+import 'services/error_service.dart';
 
 void main() {
+  // ============================================================================
+  // FLUTTER GLOBAL ERROR HANDLING
+  // ============================================================================
+
+  // Set up custom ErrorWidget for uncaught widget build errors
+  // This is THE Flutter way - not "error boundaries" (that's React)
+  ErrorWidget.builder = (FlutterErrorDetails details) {
+    // In debug mode, show Flutter's default red error screen for debugging
+    if (kDebugMode) {
+      return ErrorWidget(details.exception);
+    }
+
+    // In production, show our custom error display with recovery actions
+    return MaterialApp(
+      theme: AppTheme.lightTheme,
+      debugShowCheckedModeBanner: false,
+      home: Scaffold(
+        body: ErrorDisplay(
+          errorCode: 'WIDGET_BUILD_ERROR',
+          title: 'Something Went Wrong',
+          description:
+              'A component encountered an error. This has been logged and our team will investigate.',
+          icon: Icons.bug_report_rounded,
+          actionsBuilder: (_) => [
+            ErrorAction(
+              label: 'Restart App',
+              icon: Icons.refresh_rounded,
+              isPrimary: true,
+              onPressed: (context) async {
+                // For web: reload the page
+                if (kIsWeb) {
+                  BrowserUtils.reloadPage();
+                } else {
+                  // For native: navigate to login (closest to restart)
+                  Navigator.of(
+                    context,
+                  ).pushNamedAndRemoveUntil(AppRoutes.login, (route) => false);
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  };
+
+  // Catch all uncaught framework errors (async errors, etc.)
+  FlutterError.onError = (FlutterErrorDetails details) {
+    // Log to console in debug mode
+    if (kDebugMode) {
+      FlutterError.presentError(details);
+    }
+
+    // In production, you could send to error tracking service here
+    // Example: Sentry.captureException(details.exception, stackTrace: details.stack);
+  };
+
+  // Catch async errors that escape the Flutter framework
+  PlatformDispatcher.instance.onError = (error, stack) {
+    ErrorService.logError(
+      'Uncaught async error',
+      error: error,
+      stackTrace: stack,
+    );
+
+    // In production, send to error tracking
+    return true; // Mark as handled
+  };
+
+  // ============================================================================
+  // APP INITIALIZATION
+  // ============================================================================
+
+  // Use path-based URLs instead of hash-based (#) for web routing
+  // This allows Auth0 callback to work properly with /callback route
+  usePathUrlStrategy();
+
+  // Setup browser protections (web only)
+  if (kIsWeb) {
+    BrowserUtils.setupNavigationGuard(); // Prevent browser back/forward from breaking SPA
+    // Optional: Uncomment to disable right-click in production
+    // BrowserUtils.disableContextMenu();
+  }
+
   runApp(const TrossApp());
 }
+
+// Global navigator key for accessing context from anywhere
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 class TrossApp extends StatelessWidget {
   const TrossApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'TrossApp',
-      debugShowCheckedModeBanner: false, // Professional look
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFCD7F32), // Bronze
-          primary: const Color(0xFFCD7F32), // Bronze
-          secondary: const Color(0xFFFFB90F), // Honey Yellow
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
-        appBarTheme: const AppBarTheme(
-          elevation: 2,
-          shadowColor: Colors.black26,
-        ),
-        elevatedButtonTheme: ElevatedButtonThemeData(
-          style: ElevatedButton.styleFrom(
-            elevation: 3,
-            shadowColor: Colors.black26,
-          ),
-        ),
-      ),
-      home: const HomePage(),
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (context) => AppProvider()),
+        ChangeNotifierProvider(create: (context) => AuthProvider()),
+      ],
+      child: const AuthStateListener(),
     );
   }
 }
 
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+/// Global auth state listener - handles logout/auth loss across entire app
+class AuthStateListener extends StatelessWidget {
+  const AuthStateListener({super.key});
 
   @override
-  State<HomePage> createState() => _HomePageState();
+  Widget build(BuildContext context) {
+    return Consumer<AuthProvider>(
+      builder: (context, authProvider, child) {
+        // If user loses authentication, immediately navigate to login
+        // This handles logout, token expiry, auth errors, etc.
+        // BUT: Don't interfere with login flow or Auth0 callback processing
+
+        // Debug logging
+        ErrorService.logInfo(
+          'Auth state changed',
+          context: {
+            'isAuthenticated': authProvider.isAuthenticated,
+            'isLoading': authProvider.isLoading,
+            'isRedirecting': authProvider.isRedirecting,
+          },
+        );
+
+        if (!authProvider.isAuthenticated &&
+            !authProvider.isLoading &&
+            !authProvider.isRedirecting) {
+          // Use addPostFrameCallback to avoid navigating during build
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            // Use global navigatorKey to access Navigator from anywhere
+            final navigator = navigatorKey.currentState;
+            if (navigator != null) {
+              final currentRoute = ModalRoute.of(
+                navigator.context,
+              )?.settings.name;
+
+              final publicRoutes = [
+                AppRoutes.login,
+                AppRoutes.callback,
+                AppRoutes.root,
+                AppRoutes.error,
+                AppRoutes.unauthorized,
+                AppRoutes.notFound,
+              ];
+
+              ErrorService.logInfo(
+                'Checking redirect conditions',
+                context: {
+                  'currentRoute': currentRoute,
+                  'shouldRedirect':
+                      currentRoute != null &&
+                      !publicRoutes.contains(currentRoute),
+                },
+              );
+
+              // Don't redirect if:
+              // 1. Already on login page
+              // 2. Processing Auth0 callback
+              // 3. On root route (handled by AuthWrapper)
+              // 4. On error/status pages (404, 403, 500, etc.)
+              // 5. Route is null (still initializing - let AuthWrapper handle it)
+
+              if (currentRoute != null &&
+                  !publicRoutes.contains(currentRoute)) {
+                ErrorService.logWarning(
+                  'Unauthenticated user on protected route - redirecting to login',
+                  context: {'from': currentRoute},
+                );
+                navigator.pushNamedAndRemoveUntil(
+                  AppRoutes.login,
+                  (route) => false, // Remove all previous routes
+                );
+              }
+            }
+          });
+        }
+
+        return MaterialApp(
+          title: AppConstants.appName, // 'Tross' - centralized branding
+          debugShowCheckedModeBanner: false,
+          navigatorKey: navigatorKey,
+          theme: AppTheme.lightTheme,
+          onGenerateRoute: (settings) {
+            // Handle routes with query parameters properly
+            final uri = Uri.parse(settings.name ?? '/');
+            final path = uri.path;
+
+            // Get authentication context for route guarding
+            final context = navigatorKey.currentContext;
+            if (context != null) {
+              final authProvider = Provider.of<AuthProvider>(
+                context,
+                listen: false,
+              );
+              final isAuthenticated = authProvider.isAuthenticated;
+              final user = authProvider.user;
+
+              // Check access with route guard
+              final guardResult = RouteGuard.checkAccess(
+                route: path,
+                isAuthenticated: isAuthenticated,
+                user: user,
+              );
+
+              // Handle access denial
+              if (!guardResult.canAccess) {
+                // Redirect to appropriate page
+                if (guardResult.redirectRoute == AppRoutes.login) {
+                  return MaterialPageRoute(builder: (_) => const LoginScreen());
+                } else if (guardResult.redirectRoute ==
+                    AppRoutes.unauthorized) {
+                  return MaterialPageRoute(
+                    builder: (_) =>
+                        ErrorDisplay.unauthorized(message: guardResult.reason),
+                  );
+                } else if (guardResult.redirectRoute == AppRoutes.home) {
+                  return MaterialPageRoute(builder: (_) => const HomeScreen());
+                }
+              }
+            }
+
+            // Route to appropriate screen
+            switch (path) {
+              case AppRoutes.root:
+                return MaterialPageRoute(builder: (_) => const AuthWrapper());
+
+              case AppRoutes.login:
+                return MaterialPageRoute(builder: (_) => const LoginScreen());
+
+              case AppRoutes.home:
+                return MaterialPageRoute(builder: (_) => const HomeScreen());
+
+              case AppRoutes.admin:
+                return MaterialPageRoute(
+                  builder: (_) => const AdminDashboard(),
+                );
+
+              case AppRoutes.settings:
+                return MaterialPageRoute(
+                  builder: (_) => const SettingsScreen(),
+                );
+
+              case AppRoutes.callback:
+                return MaterialPageRoute(
+                  builder: (_) => const Auth0CallbackHandler(),
+                );
+
+              case AppRoutes.unauthorized:
+                return MaterialPageRoute(
+                  builder: (_) => ErrorDisplay.unauthorized(),
+                );
+
+              case AppRoutes.notFound:
+                return MaterialPageRoute(
+                  builder: (_) => ErrorDisplay.notFound(requestedPath: path),
+                );
+
+              case AppRoutes.error:
+                return MaterialPageRoute(builder: (_) => ErrorDisplay.error());
+
+              // 404 - Route not found
+              default:
+                return MaterialPageRoute(
+                  builder: (_) => ErrorDisplay.notFound(requestedPath: path),
+                );
+            }
+          },
+          initialRoute: '/',
+        );
+      },
+    );
+  }
 }
 
-class _HomePageState extends State<HomePage> {
-  String _message = 'Click button to test backend connection';
-  bool _isLoading = false;
-  int _connectionAttempts = 0;
+/// Auth0 Callback Handler - Processes OAuth redirect on web
+class Auth0CallbackHandler extends StatefulWidget {
+  const Auth0CallbackHandler({super.key});
 
-  Future<void> _testConnection() async {
-    setState(() {
-      _isLoading = true;
-      _connectionAttempts++;
+  @override
+  State<Auth0CallbackHandler> createState() => _Auth0CallbackHandlerState();
+}
+
+class _Auth0CallbackHandlerState extends State<Auth0CallbackHandler> {
+  @override
+  void initState() {
+    super.initState();
+    // Use addPostFrameCallback to avoid setState during build
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _handleCallback();
     });
+  }
 
-    try {
-      final stopwatch = Stopwatch()..start();
-      final response = await http
-          .get(
-            Uri.parse('http://localhost:3001/api/hello'),
-            headers: {
-              'Content-Type': 'application/json',
-              'User-Agent': 'TrossApp-Flutter/1.0.0',
-            },
-          )
-          .timeout(const Duration(seconds: 5));
+  Future<void> _handleCallback() async {
+    ErrorService.logInfo('Starting Auth0 callback handling');
 
-      stopwatch.stop();
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final success = await authProvider.handleAuth0Callback();
 
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        final responseTime = stopwatch.elapsedMilliseconds;
+    ErrorService.logInfo(
+      'Auth0 callback completed',
+      context: {'success': success, 'mounted': mounted},
+    );
 
-        setState(() {
-          _message =
-              '✅ ${data['message'] ?? 'Hello from backend!'}\n'
-              '⚡ Response time: ${responseTime}ms\n'
-              '🔄 Attempt: $_connectionAttempts';
-          _isLoading = false;
-        });
-      } else {
-        setState(() {
-          _message =
-              '❌ Error: HTTP ${response.statusCode}\n'
-              'Server returned an error';
-          _isLoading = false;
-        });
-      }
-    } catch (e) {
-      setState(() {
-        if (e.toString().contains('TimeoutException')) {
-          _message =
-              '⏱️ Timeout: Backend not responding\n'
-              '💡 Is server running on port 3001?';
-        } else if (e.toString().contains('SocketException')) {
-          _message =
-              '🌐 Connection failed: Network error\n'
-              '💡 Check if backend server is running';
-        } else {
-          _message = '❌ Connection failed:\n${e.toString().split('\n').first}';
+    if (success) {
+      if (mounted) {
+        ErrorService.logInfo('Callback success - redirecting to home');
+        // Clean URL before navigation (remove OAuth query parameters)
+        if (kIsWeb) {
+          BrowserUtils.replaceHistoryState(AppRoutes.home);
         }
-        _isLoading = false;
-      });
+        Navigator.of(context).pushReplacementNamed(AppRoutes.home);
+      }
+    } else {
+      if (mounted) {
+        ErrorService.logWarning('Callback failed - redirecting to login');
+        // Clean URL before redirecting to login
+        if (kIsWeb) {
+          BrowserUtils.replaceHistoryState(AppRoutes.login);
+        }
+        Navigator.of(context).pushReplacementNamed(AppRoutes.login);
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final isSmallScreen = MediaQuery.of(context).size.width < 600;
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('TrossApp Demo'),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
-        centerTitle: true,
+    return const Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('Completing Auth0 login...'),
+          ],
+        ),
       ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: EdgeInsets.all(isSmallScreen ? 16.0 : 32.0),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 600),
+    );
+  }
+}
+
+class AuthWrapper extends StatefulWidget {
+  const AuthWrapper({super.key});
+
+  @override
+  State<AuthWrapper> createState() => _AuthWrapperState();
+}
+
+class _AuthWrapperState extends State<AuthWrapper> {
+  @override
+  void initState() {
+    super.initState();
+    // Initialize providers when app starts
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final appProvider = Provider.of<AppProvider>(context, listen: false);
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
+      await appProvider.initialize();
+      await authProvider.initialize();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer2<AppProvider, AuthProvider>(
+      builder: (context, appProvider, authProvider, child) {
+        // Show loading while initializing OR redirecting to Auth0
+        if (!appProvider.isInitialized ||
+            authProvider.isLoading ||
+            authProvider.isRedirecting) {
+          return const Scaffold(
+            body: Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  SizedBox(height: isSmallScreen ? 16 : 32),
-                  Hero(
-                    tag: 'app-icon',
-                    child: Icon(
-                      Icons.build_circle,
-                      size: isSmallScreen ? 48 : 64,
-                      color: const Color(0xFFCD7F32), // Bronze
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'TrossApp',
-                    style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                      color: const Color(0xFF8B4513), // Walnut
-                      fontWeight: FontWeight.bold,
-                      fontSize: isSmallScreen ? 28 : 32,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Flutter ↔ Node.js Connection Demo',
-                    style: TextStyle(
-                      fontSize: isSmallScreen ? 14 : 16,
-                      color: const Color(0xFF8B4513), // Walnut
-                      fontWeight: FontWeight.w500,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 24),
-                  Card(
-                    elevation: 3,
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        color: const Color(
-                          0xFFFFB90F,
-                        ).withOpacity(0.1), // Light Honey Yellow
-                      ),
-                      child: _isLoading
-                          ? Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const CircularProgressIndicator(
-                                  color: Color(0xFFCD7F32),
-                                  strokeWidth: 3,
-                                ),
-                                const SizedBox(height: 16),
-                                Text(
-                                  'Connecting to backend...',
-                                  style: TextStyle(
-                                    color: Colors.grey[700],
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
-                            )
-                          : Text(
-                              _message,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(fontSize: 16, height: 1.4),
-                            ),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: _isLoading ? null : _testConnection,
-                      icon: _isLoading
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                          : const Icon(Icons.wifi_tethering),
-                      label: Text(
-                        _isLoading ? 'Testing...' : 'Test Backend Connection',
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFCD7F32), // Bronze
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 32,
-                          vertical: 16,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                    ),
-                  ),
-                  SizedBox(height: isSmallScreen ? 16 : 32),
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text('Initializing ${AppConstants.appName}...'),
                 ],
               ),
             ),
-          ),
-        ),
-      ),
+          );
+        }
+
+        // Check if user is authenticated
+        if (authProvider.isAuthenticated) {
+          return const HomeScreen();
+        } else {
+          return const LoginScreen();
+        }
+      },
     );
   }
 }

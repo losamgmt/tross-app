@@ -150,6 +150,11 @@ tmp/
 .Trashes
 ehthumbs.db
 Thumbs.db
+desktop.ini
+
+# Temporary/junk files
+_ul
+*/_ul
 
 # IDEs
 .vscode/
@@ -165,3 +170,19 @@ target/
 
 # Deployment
 deployment-config.json
+
+# Test artifacts
+playwright-report/
+test-results/
+e2e-results/
+
+# Backend logs
+backend/logs/
+*.log
+
+# Coverage reports
+coverage/
+backend/coverage/
+
+# Diagnostic/temporary scripts
+backend/test-db-connection.js
