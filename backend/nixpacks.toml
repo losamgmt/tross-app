@@ -1,0 +1,11 @@
+# Railway Nixpacks Configuration
+# Forces Node 24 for monorepo backend deployment
+
+[phases.setup]
+nixPkgs = ["nodejs-24_x"]
+
+[phases.install]
+cmds = ["npm ci --prefer-offline --no-audit"]
+
+[start]
+cmd = "node server.js"
